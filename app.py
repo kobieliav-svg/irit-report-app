@@ -17,26 +17,40 @@ def upload_file():
         file = request.files['file']
         if file:
             try:
-                df = pd.read_csv(file, header=None) if file.filename.endswith('.csv') else pd.read_excel(file, header=None)
+                if file.filename.endswith('.csv'):
+                    df = pd.read_csv(file, header=None)
+                else:
+                    df = pd.read_excel(file, header=None)
+
                 patients_summary = []
                 current_patient = None
 
                 for i, row in df.iterrows():
                     row_list = [str(val).strip() for val in row.tolist()]
                     potential_name = str(row[4]).strip() if pd.notna(row[4]) else ""
+                    
                     if potential_name and row.count() <= 2 and "תאריך" not in potential_name:
-                        current_patient = {'full_name': potential_name, 'first_name': potential_name.split()[0], 'debt': "0", 'dates': []}
+                        current_patient = {
+                            'full_name': potential_name, 
+                            'first_name': potential_name.split()[0], 
+                            'debt': "0", 
+                            'dates': []
+                        }
                         patients_summary.append(current_patient)
+                    
                     if any("חוב כולל" in s for s in row_list) and current_patient:
                         current_patient['debt'] = str(df.iloc[i + 1][5])
+                        
                     cell_0 = str(row[0])
                     if "/" in cell_0 and any(char.isdigit() for char in cell_0) and current_patient:
-                        if not (pd.notna(row[2]) and str(row[2]).strip() != "") and not (pd.notna(row[8]) and str(row[8]).strip() != ""):
+                        is_cancelled = pd.notna(row[2]) and str(row[2]).strip() != ""
+                        is_paid = pd.notna(row[8]) and str(row[8]).strip() != ""
+                        if not is_cancelled and not is_paid:
                             current_patient['dates'].append(cell_0)
 
                 response = send_via_mailjet_api(patients_summary)
                 if response.status_code == 200 or response.status_code == 201:
-                    return '<h1>Success! Email sent via API.</h1><a href="/">Back</a>'
+                    return '<h1>Success! The personalized report was sent.</h1><a href="/">Back</a>'
                 else:
                     return f"Mailjet Error: {response.text}"
             except Exception as e:
@@ -46,18 +60,32 @@ def upload_file():
 def send_via_mailjet_api(patients_data):
     if not patients_data: return
     
-    body = "Hello Irit, summary:\n\n"
+    # הנוסח שאירית ביקשה
+    message_body = "שלום אירית,\nלהלן ריכוז ההודעות לשליחה למטופלים:\n\n"
+    message_body += "========================================\n\n"
+
     for p in patients_data:
         if not p['dates']: continue
-        body += f"--- {p['full_name']} ---\nDates: {', '.join(p['dates'])}\nDebt: {p['debt']} NIS\n\n"
+        
+        # הופך את רשימת התאריכים לטקסט מופרד בפסיקים
+        dates_str = ", ".join(p['dates'])
+        count = len(p['dates'])
+        
+        # בניית ההודעה האישית לכל מטופל
+        message_body += ‏f"עבור: {p['full_name']}\n"
+        message_body += ‏f"הי {p['first_name']},\n"
+        message_body += ‏f"בחודש האחרון היו לנו {count} מפגשים בתאריכים: {dates_str}.\n"
+        message_body += ‏f"סה\"כ לתשלום: {p['debt']} ש\"ח.\n"
+        message_body += "תודה רבה והמשך יום נעים!\n"
+        message_body += "\n----------------------------------------\n\n"
     
     data = {
         'Messages': [
             {
-                "From": {"Email": SENDER_EMAIL, "Name": "Irit Billing App"},
+                "From": {"Email": SENDER_EMAIL, "Name": "Irit Billing System"},
                 "To": [{"Email": email} for email in RECIPIENT_EMAILS],
-                "Subject": "Monthly Billing Report",
-                "TextPart": body
+                "Subject": "סיכום חודשי למטופלים - אירית",
+                "TextPart": message_body
             }
         ]
     }
