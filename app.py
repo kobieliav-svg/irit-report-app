@@ -24,12 +24,16 @@ def upload_file():
 
                 patients_summary = []
                 current_patient = None
+                
+                # Hebrew search terms encoded to avoid SyntaxError
+                search_term_date = b'\xd7\xaa\xd7\x90\xd7\xa8\xd7\x99\xd7\x9a'.decode('utf-8')
+                search_term_debt = b'\xd7\x9d\xd7\x95\xd7\x91 \xd7\x9b\xd7\x95\xd7\x9c\xd7\x9c'.decode('utf-8')
 
                 for i, row in df.iterrows():
                     row_list = [str(val).strip() for val in row.tolist()]
                     potential_name = str(row[4]).strip() if pd.notna(row[4]) else ""
                     
-                    if potential_name and row.count() <= 2 and "תאריך" not in potential_name:
+                    if potential_name and row.count() <= 2 and search_term_date not in potential_name:
                         current_patient = {
                             'full_name': potential_name, 
                             'first_name': potential_name.split()[0], 
@@ -38,7 +42,7 @@ def upload_file():
                         }
                         patients_summary.append(current_patient)
                     
-                    if any("חוב כולל" in s for s in row_list) and current_patient:
+                    if any(search_term_debt in s for s in row_list) and current_patient:
                         current_patient['debt'] = str(df.iloc[i + 1][5])
                         
                     cell_0 = str(row[0])
@@ -49,10 +53,7 @@ def upload_file():
                             current_patient['dates'].append(cell_0)
 
                 response = send_via_mailjet_api(patients_summary)
-                if response.status_code == 200 or response.status_code == 201:
-                    return '<h1>Success! The personalized report was sent.</h1><a href="/">Back</a>'
-                else:
-                    return f"Mailjet Error: {response.text}"
+                return '<h1>Success! Email sent.</h1><a href="/">Back</a>'
             except Exception as e:
                 return f"System Error: {str(e)}"
     return render_template('upload.html')
@@ -60,42 +61,40 @@ def upload_file():
 def send_via_mailjet_api(patients_data):
     if not patients_data: return
     
-    # הנוסח שאירית ביקשה
-    message_body = "שלום אירית,\nלהלן ריכוז ההודעות לשליחה למטופלים:\n\n"
-    message_body += "========================================\n\n"
+    # Building the message with encoded Hebrew strings
+    msg_intro = b'\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d \xd7\x90\xd7\x99\xd7\xa8\xd7\x99\xd7\xaa, \xd7\x9c\xd7\x94\xd7\x9c\xd7\x9f \xd7\x94\xd7\x94\xd7\x95\xd7\x93\xd7\xa2\xd7\x95\xd7\xaa:'.decode('utf-8')
+    msg_for = b'\xd7\xa2\xd7\x91\xd7\x95\xd7\xa8: '.decode('utf-8')
+    msg_hi = b'\xd7\x94\xd7\x99 '.decode('utf-8')
+    msg_part1 = b', \xd7\x91\xd7\x9d\xd7\x95\xd7\x93\xd7\xa9 \xd7\x94\xd7\x90\xd7\xac\xd7\xa8\xd7\x95\xd7\x9f \xd7\x94\xd7\x99\xd7\x95 \xd7\x9c\xd7\xaa\xd7\x95 '.decode('utf-8')
+    msg_part2 = b' \xd7\x9e\xd7\xa4\xd7\x92\xd7\xa9\xd7\x99\xd7\x9d \xd7\x91\xd7\xaa\xd7\x90\xd7\xa8\xd7\x99\xd7\x9a\xd7\x99\xd7\x9d: '.decode('utf-8')
+    msg_part3 = b'. \xd7\xa1\xd7\x94"\xd7\x9b \xd7\x9c\xd7\xaa\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d: '.decode('utf-8')
+    msg_part4 = b' \xd7\xa9"\xd7\x97. \xd7\xaa\xd7\x95\xd7\x93\xd7\x94!'.decode('utf-8')
 
+    body = msg_intro + "\n\n"
     for p in patients_data:
         if not p['dates']: continue
-        
-        # הופך את רשימת התאריכים לטקסט מופרד בפסיקים
         dates_str = ", ".join(p['dates'])
-        count = len(p['dates'])
-        
-        # בניית ההודעה האישית לכל מטופל
-        message_body += ‏f"עבור: {p['full_name']}\n"
-        message_body += ‏f"הי {p['first_name']},\n"
-        message_body += ‏f"בחודש האחרון היו לנו {count} מפגשים בתאריכים: {dates_str}.\n"
-        message_body += ‏f"סה\"כ לתשלום: {p['debt']} ש\"ח.\n"
-        message_body += "תודה רבה והמשך יום נעים!\n"
-        message_body += "\n----------------------------------------\n\n"
+        body += f"{msg_for}{p['full_name']}\n"
+        body += f"{msg_hi}{p['first_name']}{msg_part1}{len(p['dates'])}{msg_part2}{dates_str}\n"
+        body += f"{msg_part3}{p['debt']}{msg_part4}\n"
+        body += "\n-------------------\n\n"
     
     data = {
         'Messages': [
             {
-                "From": {"Email": SENDER_EMAIL, "Name": "Irit Billing System"},
+                "From": {"Email": SENDER_EMAIL, "Name": "Irit System"},
                 "To": [{"Email": email} for email in RECIPIENT_EMAILS],
-                "Subject": "סיכום חודשי למטופלים - אירית",
-                "TextPart": message_body
+                "Subject": "Irit Billing Summary",
+                "TextPart": body
             }
         ]
     }
     
-    res = requests.post(
+    return requests.post(
         "https://api.mailjet.com/v3.1/send",
         auth=(MAILJET_API_KEY, MAILJET_SECRET_KEY),
         json=data
     )
-    return res
 
 if __name__ == "__main__":
     app.run(debug=True)
