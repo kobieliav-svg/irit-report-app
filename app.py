@@ -1,12 +1,11 @@
 from flask import Flask, render_template, request
 import pandas as pd
-import smtplib
-from email.mime.text import MIMEText
+import requests
 import os
 
 app = Flask(__name__)
 
-# Mailjet Settings
+# Mailjet API Settings
 MAILJET_API_KEY = '89f6b99bc7bb58943ea4b5e998ab7e4d'
 MAILJET_SECRET_KEY = '77445301940d666bcdb044b1f99a3e22'
 SENDER_EMAIL = 'kobieliav@gmail.com'
@@ -18,67 +17,57 @@ def upload_file():
         file = request.files['file']
         if file:
             try:
-                if file.filename.endswith('.csv'):
-                    df = pd.read_csv(file, header=None)
-                else:
-                    df = pd.read_excel(file, header=None)
-
+                df = pd.read_csv(file, header=None) if file.filename.endswith('.csv') else pd.read_excel(file, header=None)
                 patients_summary = []
                 current_patient = None
 
                 for i, row in df.iterrows():
                     row_list = [str(val).strip() for val in row.tolist()]
                     potential_name = str(row[4]).strip() if pd.notna(row[4]) else ""
-                    
-                    if potential_name and row.count() <= 2 and "Date" not in potential_name and "תאריך" not in potential_name:
-                        current_patient = {
-                            'full_name': potential_name, 
-                            'first_name': potential_name.split()[0], 
-                            'debt': "0", 
-                            'dates': []
-                        }
+                    if potential_name and row.count() <= 2 and "תאריך" not in potential_name:
+                        current_patient = {'full_name': potential_name, 'first_name': potential_name.split()[0], 'debt': "0", 'dates': []}
                         patients_summary.append(current_patient)
-                    
                     if any("חוב כולל" in s for s in row_list) and current_patient:
                         current_patient['debt'] = str(df.iloc[i + 1][5])
-                        
                     cell_0 = str(row[0])
                     if "/" in cell_0 and any(char.isdigit() for char in cell_0) and current_patient:
-                        is_cancelled = pd.notna(row[2]) and str(row[2]).strip() != ""
-                        is_paid = pd.notna(row[8]) and str(row[8]).strip() != ""
-                        if not is_cancelled and not is_paid:
+                        if not (pd.notna(row[2]) and str(row[2]).strip() != "") and not (pd.notna(row[8]) and str(row[8]).strip() != ""):
                             current_patient['dates'].append(cell_0)
 
-                send_via_mailjet(patients_summary)
-                return '<h1>Success! The report was sent.</h1><a href="/">Back</a>'
+                response = send_via_mailjet_api(patients_summary)
+                if response.status_code == 200 or response.status_code == 201:
+                    return '<h1>Success! Email sent via API.</h1><a href="/">Back</a>'
+                else:
+                    return f"Mailjet Error: {response.text}"
             except Exception as e:
-                return f"Error: {str(e)}"
+                return f"System Error: {str(e)}"
     return render_template('upload.html')
 
-def send_via_mailjet(patients_data):
+def send_via_mailjet_api(patients_data):
     if not patients_data: return
     
-    header = "Hello Irit, here is the session summary:\n\n"
-    body = ""
+    body = "Hello Irit, summary:\n\n"
     for p in patients_data:
         if not p['dates']: continue
-        
-        dates_str = ", ".join(p['dates'])
-        msg = f"Hi {p['first_name']},\n"
-        msg += f"Summary for the last month: {len(p['dates'])} sessions on: {dates_str}.\n"
-        msg += f"Total: {p['debt']} NIS.\n"
-        msg += "Thank you!\n"
-        body += f"--- {p['full_name']} ---\n{msg}\n\n"
+        body += f"--- {p['full_name']} ---\nDates: {', '.join(p['dates'])}\nDebt: {p['debt']} NIS\n\n"
     
-    msg = MIMEText(header + body, 'plain', 'utf-8')
-    msg['Subject'] = 'Monthly Billing Report'
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = ", ".join(RECIPIENT_EMAILS)
-
-    with smtplib.SMTP('in-v3.mailjet.com', 587) as server:
-        server.starttls()
-        server.login(MAILJET_API_KEY, MAILJET_SECRET_KEY)
-        server.sendmail(SENDER_EMAIL, RECIPIENT_EMAILS, msg.as_string())
+    data = {
+        'Messages': [
+            {
+                "From": {"Email": SENDER_EMAIL, "Name": "Irit Billing App"},
+                "To": [{"Email": email} for email in RECIPIENT_EMAILS],
+                "Subject": "Monthly Billing Report",
+                "TextPart": body
+            }
+        ]
+    }
+    
+    res = requests.post(
+        "https://api.mailjet.com/v3.1/send",
+        auth=(MAILJET_API_KEY, MAILJET_SECRET_KEY),
+        json=data
+    )
+    return res
 
 if __name__ == "__main__":
     app.run(debug=True)
