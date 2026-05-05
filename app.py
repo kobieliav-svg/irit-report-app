@@ -4,7 +4,6 @@ import requests
 
 app = Flask(__name__)
 
-# Config
 AK = '89f6b99bc7bb58943ea4b5e998ab7e4d'
 SK = '77445301940d666bcdb044b1f99a3e22'
 S = 'kobieliav@gmail.com'
@@ -20,7 +19,6 @@ def upload_file():
                 summary = []
                 curr = None
                 
-                # Hebrew search terms
                 t_date = "תאריך"
                 t_debt = "חוב כולל"
 
@@ -41,22 +39,26 @@ def upload_file():
                         if not (pd.notna(row[2]) and str(row[2]).strip()) and not (pd.notna(row[8]) and str(row[8]).strip()):
                             curr['dt'].append(v0)
 
-                # Email Body Construction
-                body = "שלום אירית, להלן סיכום המפגשים עבור חודש אפריל:\n\n"
+                m_title = "שלום אירית, להלן סיכום המפגשים עבור חודש אפריל:"
+                m_for = "עבור: "
+                m_hi = "הי "
+                m_p1 = ", במהלך חודש אפריל היו לנו "
+                m_p2 = " מפגשים בתאריכים: "
+                m_p3 = "סה\"כ לתשלום: "
+                m_p4 = " ש\"ח. תודה רבה!"
+
+                body = m_title + "\n\n"
                 for p in summary:
                     if p['dt']:
-                        body += f"עבור: {p['f']}\n"
-                        body += ‏f"הי {p['s']}, במהלך חודש אפריל היו לנו {len(p['dt'])} מפגשים בתאריכים: {', '.join(p['dt'])}\n"
-                        body += f"סה\"כ לתשלום: {p['d']} ש\"ח.\n"
-                        body += "תודה רבה!\n\n-------------------\n\n"
+                        body += m_for + p['f'] + "\n"
+                        body += m_hi + p['s'] + m_p1 + str(len(p['dt'])) + m_p2 + ", ".join(p['dt']) + "\n"
+                        body += m_p3 + p['d'] + m_p4 + "\n\n---\n\n"
 
                 res = requests.post("https://api.mailjet.com/v3.1/send", auth=(AK, SK), json={
-                    'Messages': [{
-                        'From': {'Email': S, 'Name': 'Irit Billing'}, 
-                        'To': [{'Email': e} for e in R], 
-                        'Subject': 'סיכום חובות חודשי - אפריל', 
-                        'TextPart': body
-                    }]
+                    'Messages': [{'From': {'Email': S, 'Name': 'Irit Billing'}, 
+                                 'To': [{'Email': e} for e in R], 
+                                 'Subject': 'סיכום חובות חודשי - אפריל', 
+                                 'TextPart': body}]
                 })
                 
                 return '<h1>Success! The report was sent.</h1>'
