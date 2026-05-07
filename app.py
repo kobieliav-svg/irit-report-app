@@ -11,14 +11,11 @@ SK = '77445301940d666bcdb044b1f99a3e22'
 S = 'kobieliav@gmail.com'
 R = ['ishnab@gmail.com', 'kobieliav@gmail.com']
 
-# All Hebrew keywords defined strictly as Unicode escape sequences
-‏# K_DEBT = חוב כולל מטופל
+# Hebrew keywords defined as Unicode ONLY to avoid syntax errors
+# Used for: Debt Total, Details, Hi, Total to pay
 K_DEBT = "\u05d7\u05d5\u05d1 \u05db\u05d5\u05dc\u05dc \u05de\u05d8\u05d5\u05e4\u05dc"
-‏# K_DET = פירוט
 K_DET = "\u05e4\u05d9\u05e8\u05d5\u05d8"
-‏# M_HI = הי
 M_HI = "\u05d4\u05d9"
-‏# M_TOTAL = סהכ לתשלום
 M_TOTAL = "\u05e1\u05d4\"\u05db \u05dc\u05ea\u05e9\u05dc\u05d5\u05dd"
 
 @app.route('/', methods=['GET', 'POST'])
@@ -27,7 +24,7 @@ def upload_file():
         f = request.files.get('file')
         if f:
             try:
-                # Reading the CSV with flexible engine
+                # Load CSV using python engine for better compatibility
                 df = pd.read_csv(f, header=None, encoding='utf-8-sig', sep=',', engine='python')
                 
                 summary = []
@@ -37,23 +34,24 @@ def upload_file():
                     row_list = [str(val).strip() for val in row.tolist() if pd.notna(val)]
                     row_str = " ".join(row_list)
 
-                    # Identify name in rows like "-------------- Name --------------"
+                    # 1. Identify Patient Name (Line with multiple dashes)
                     if "--------------" in row_str:
                         match = re.search(r'-+\s*(.*?)\s*-+', row_str)
                         if match:
                             raw_name = match.group(1)
+                            # Check if it's NOT the details line
                             if K_DET not in raw_name:
                                 name = raw_name.strip()
                                 if name and (not curr or name != curr['f']):
                                     curr = {'f': name, 's': name.split()[0], 'd': "0", 'dt': []}
                                     summary.append(curr)
 
-                    # Identify date in column 0
+                    # 2. Identify date in Column A (Index 0)
                     v0 = str(row[0]).strip()
                     if re.match(r'\d{1,2}/\d{1,2}/\d{4}', v0) and curr:
                         curr['dt'].append(v0)
 
-                    # Identify debt amount
+                    # 3. Identify debt (Row below the keyword)
                     if K_DEBT in row_str and curr:
                         if i + 1 < len(df):
                             next_row = [str(x) for x in df.iloc[i+1].tolist()]
@@ -63,24 +61,24 @@ def upload_file():
                                     curr['d'] = str(int(float(num)))
                                     break
 
-                # Building the email body using only ASCII and Unicode escapes
-                body = "Billing Report:\n\n"
+                # Build Email
+                body = "Monthly Summary:\n\n"
                 valid_count = 0
                 for p in summary:
                     if p['dt'] and p['d'] != "0":
                         valid_count += 1
                         body += p['f'] + ":\n"
                         body += M_HI + " " + p['s'] + ", " + str(len(p['dt'])) + " meetings: " + ", ".join(p['dt']) + "\n"
-                        body += M_TOTAL + ": " + p['d'] + "\n\n---\n\n"
+                        body += M_TOTAL + ": " + p['d'] + " NIS\n\n---\n\n"
 
                 if valid_count > 0:
                     requests.post("https://api.mailjet.com/v3.1/send", auth=(AK, SK), json={
                         'Messages': [{'From': {'Email': S, 'Name': 'Irit'}, 
                                      'To': [{'Email': e} for e in R], 
-                                     'Subject': 'Billing Report', 'TextPart': body}]
+                                     'Subject': 'Billing Update', 'TextPart': body}]
                     })
                     return f"<h1>Success! Sent {valid_count} summaries.</h1>"
-                return "<h1>No valid data found in file.</h1>"
+                return "<h1>No data identified.</h1>"
 
             except Exception as e:
                 return f"<h1>Error: {str(e)}</h1>"
