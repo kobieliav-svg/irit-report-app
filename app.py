@@ -12,11 +12,9 @@ SK = '77445301940d666bcdb044b1f99a3e22'
 S = 'kobieliav@gmail.com'
 R = ['ishnab@gmail.com', 'kobieliav@gmail.com']
 
-# --- Hebrew Keywords (Defined here to avoid encoding issues in logic) ---
-KW_DATE = "\u05ea\u05d0\u05e8\u05d9\u05da" # תאריך
-KW_DEBT = "\u05d7\u05d5\u05d1" # חוב
-KW_PAY = "\u05dc\u05ea\u05e9\u05dc\u05d5\u05dd" # לתשלום
-KW_DET = "\u05e4\u05d9\u05e8\u05d5\u05d8" # פירוט
+# --- Unicode Hebrew Keywords ---
+T_DATE = "\u05ea\u05d0\u05e8\u05d9\u05da" # תאריך
+T_DEBT = "\u05d7\u05d5\u05d1 \u05db\u05d5\u05dc\u05dc" # חוב כולל
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -24,7 +22,7 @@ def upload_file():
         f = request.files['file']
         if f:
             try:
-                # Load file with safe encoding
+                # טעינה בטוחה של הקובץ
                 if f.filename.endswith('.csv'):
                     df = pd.read_csv(f, header=None, encoding='utf-8-sig')
                 else:
@@ -32,52 +30,64 @@ def upload_file():
                 
                 summary = []
                 curr = None
-                
-                print(f"DEBUG: Rows found: {len(df)}", file=sys.stderr)
 
                 for i, row in df.iterrows():
                     row_list = [str(val).strip() for val in row.tolist()]
-                    row_str = " | ".join(row_list)
                     
-                    # 1. Patient Name Logic (Column 4)
+                    # 1. זיהוי שם המטופל (עמודה 4)
                     raw_name = str(row[4]).strip() if len(row) > 4 and pd.notna(row[4]) else ""
+                    # ניקוי קווים (---) שעלולים להופיע בשם
                     clean_name = re.sub(r'[-/._*]{2,}', '', raw_name).strip()
                     
-                    if clean_name and len(clean_name) > 1 and "/" not in str(row[0]):
-                        if KW_DATE not in clean_name and KW_DET not in clean_name:
+                    # אם זו שורת שם מטופל (יש טקסט, אין תאריך בעמודה 0)
+                    if clean_name and T_DATE not in clean_name and "/" not in str(row[0]):
+                        if len(clean_name) > 2:
                             curr = {'f': clean_name, 's': clean_name.split()[0], 'd': "0", 'dt': []}
                             summary.append(curr)
 
-                    # 2. Dates Logic (Column 0)
+                    # 2. זיהוי סכום (חוב כולל)
+                    if any(T_DEBT in s for s in row_list) and curr:
+                        # בודק את עמודה 5 או 6 כפי שהיה במקור, אך עם ניקוי מספרים
+                        val = df.iloc[i + 1][5] if pd.notna(df.iloc[i + 1][5]) else df.iloc[i + 1][6]
+                        if pd.notna(val):
+                            # משאיר רק מספרים ונקודה עשרונית
+                            curr['d'] = re.sub(r'[^\d.]', '', str(val))
+
+                    # 3. זיהוי תאריכי מפגשים
                     v0 = str(row[0])
                     if "/" in v0 and any(c.isdigit() for c in v0) and curr:
+                        # מוודא שזו שורת פירוט ולא שורת סיכום (עמודה 2 ריקה)
                         if len(row) > 2 and (not str(row[2]).strip() or str(row[2]) == "nan"):
                             curr['dt'].append(v0)
 
-                    # 3. Debt/Amount Logic
-                    if (KW_DEBT in row_str or KW_PAY in row_str) and curr:
-                        search_area = row_str
-                        if i + 1 < len(df):
-                            search_area += " | " + " ".join([str(x) for x in df.iloc[i+1].values])
-                        
-                        numbers = re.findall(r'\b\d{2,4}\b', search_area)
-                        if numbers:
-                            curr['d'] = numbers[-1]
-
-                # --- Screen Output (Diagnostics) ---
-                if not summary:
-                    return "<h1>No Patients Found. Check Column E.</h1>"
+                # --- בניית גוף המייל ---
+                m_title = "שלום אירית, להלן סיכום המפגשים עבור חודש אפריל:"
+                body = m_title + "\n\n"
                 
-                res_html = "<h2>Diagnostic Results:</h2><table border='1' dir='rtl'>"
-                res_html += "<tr><th>Name</th><th>Count</th><th>Dates</th><th>Amount</th></tr>"
+                valid_emails = 0
                 for p in summary:
-                    res_html += f"<tr><td>{p['f']}</td><td>{len(p['dt'])}</td><td>{', '.join(p['dt'])}</td><td>{p['d']}</td></tr>"
-                res_html += "</table><br><a href='/'>Back</a>"
+                    if p['dt'] and p['d'] != "0":
+                        valid_emails += 1
+                        body += f"עבור: {p['f']}\n"
+                        body += ‏f"הי {p['s']}, במהלך חודש אפריל היו לנו {len(p['dt'])} מפגשים בתאריכים: {', '.join(p['dt'])}\n"
+                        body += f"סה\"כ לתשלום: {p['d']} ש\"ח. תודה רבה!\n\n---\n\n"
+
+                # אם לא נמצאו נתונים, שולח התראה כדי שלא ננחש
+                if valid_emails == 0:
+                    body = ‏"המערכת הופעלה אך לא זוהו נתונים תקינים לשליחה בקובץ ה-CSV."
+
+                # שליחה
+                res = requests.post("https://api.mailjet.com/v3.1/send", auth=(AK, SK), json={
+                    'Messages': [{'From': {'Email': S, 'Name': 'Irit Billing'}, 
+                                 'To': [{'Email': e} for e in R], 
+                                 'Subject': 'סיכום חובות חודשי - אפריל', 
+                                 'TextPart': body}]
+                })
                 
-                return res_html
+                return f"<h1>Success! Sent summaries for {valid_emails} patients.</h1>"
 
             except Exception as e:
-                return f"<h1>Error: {str(e)}</h1>"
+                return f"<h1>Error processing file: {str(e)}</h1>"
     
     return render_template('upload.html')
 
