@@ -11,11 +11,11 @@ SK = '77445301940d666bcdb044b1f99a3e22'
 S = 'kobieliav@gmail.com'
 R = ['ishnab@gmail.com', 'kobieliav@gmail.com']
 
-# Define keywords using Unicode escape sequences only
-# This ensures zero non-printable characters are in the source code
-K_DATE = "\u05ea\u05d0\u05e8\u05d9\u05da"
-K_DEBT = "\u05d7\u05d5\u05d1"
-M_SUBJ = "Billing Update"
+# Keywords as Hex/Unicode to prevent ANY non-printable characters
+K_DEBT = "\u05d7\u05d5\u05d1 \u05db\u05d5\u05dc\u05dc" # חוב כולל
+M_HI = "\u05d4\u05d9" # הי
+M_MEET = "\u05de\u05e4\u05d2\u05e9\u05d9\u05dd" # מפגשים
+M_TOTAL = "\u05e1\u05d4\"\u05db \u05dc\u05ea\u05e9\u05dc\u05d5\u05dd" # סהכ לתשלום
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -23,57 +23,61 @@ def upload_file():
         f = request.files.get('file')
         if f:
             try:
-                if f.filename.endswith('.csv'):
-                    df = pd.read_csv(f, header=None, encoding='utf-8-sig')
-                else:
-                    df = pd.read_excel(f, header=None)
+                ‏# הקובץ של אירית הוא CSV שמפריד עם פסיקים אבל יש בו טקסט חופשי
+                df = pd.read_csv(f, header=None, encoding='utf-8-sig', sep=',', engine='python')
                 
                 summary = []
                 curr = None
 
                 for i, row in df.iterrows():
-                    row_cells = [str(c).strip() for c in row.tolist()]
-                    row_text = " ".join(row_cells)
-                    
-                    # Patient logic (Column E)
-                    val_e = str(row[4]).strip() if len(row) > 4 else ""
-                    clean_name = re.sub(r'[-/._*]{2,}', '', val_e).strip()
-                    
-                    if clean_name and len(clean_name) > 1 and K_DATE not in clean_name:
-                        if "/" not in str(row[0]):
-                            curr = {'f': clean_name, 'd': "0", 'dt': []}
-                            summary.append(curr)
+                    row_list = [str(val).strip() for val in row.tolist() if pd.notna(val)]
+                    row_str = " ".join(row_list)
 
-                    # Date logic (Column A)
+                    # זיהוי שם מטופל לפי השורות עם המקפים: "-------------- אסף בוקצין--------------"
+                    if "--------------" in row_str:
+                        # מחלץ את הטקסט שבין המקפים
+                        name_match = re.search(r'-+\s*(.*?)\s*-+', row_str)
+                        if name_match:
+                            raw_name = name_match.group(1)
+                            # אם זה לא שורת הפירוט, זה השם
+                            if "\u05e4\u05d9\u05e8\u05d5\u05d8" not in raw_name: # "פירוט"
+                                name = raw_name.strip()
+                                if name and (not curr or name != curr['f']):
+                                    curr = {'f': name, 's': name.split()[0], 'd': "0", 'dt': []}
+                                    summary.append(curr)
+
+                    # זיהוי תאריך בעמודה הראשונה
                     v0 = str(row[0]).strip()
-                    if "/" in v0 and any(c.isdigit() for c in v0) and curr:
+                    if re.match(r'\d{1,2}/\d{1,2}/\d{4}', v0) and curr:
                         curr['dt'].append(v0)
 
-                    # Amount logic
-                    if K_DEBT in row_text and curr:
-                        search_rows = df.iloc[i:i+3]
-                        for _, r in search_rows.iterrows():
-                            for cell in r:
-                                n = re.sub(r'[^\d]', '', str(cell))
-                                if n and 100 <= int(n) <= 9999:
-                                    curr['d'] = n
+                    # זיהוי סכום - מופיע בשורה שמתחת ל"חוב כולל"
+                    if K_DEBT in row_str and curr:
+                        if i + 1 < len(df):
+                            next_row = [str(x) for x in df.iloc[i+1].tolist()]
+                            for val in next_row:
+                                num = re.sub(r'[^\d.]', '', val)
+                                if num and float(num) > 10:
+                                    curr['d'] = str(int(float(num)))
                                     break
-                            if curr['d'] != "0": break
 
+                # בניית המייל
+                body = "Monthly Billing Summary:\n\n"
                 valid_count = 0
-                body = "Summary:\n\n"
                 for p in summary:
                     if p['dt'] and p['d'] != "0":
                         valid_count += 1
-                        body += f"{p['f']}: {len(p['dt'])} dates, {p['d']} total.\n"
+                        body += f"{p['f']}:\n"
+                        body += f"{M_HI} {p['s']}, {len(p['dt'])} {M_MEET}: {', '.join(p['dt'])}\n"
+                        body += f"{M_TOTAL}: {p['d']} NIS\n\n---\n\n"
 
                 if valid_count > 0:
                     requests.post("https://api.mailjet.com/v3.1/send", auth=(AK, SK), json={
                         'Messages': [{'From': {'Email': S, 'Name': 'Irit'}, 
                                      'To': [{'Email': e} for e in R], 
-                                     'Subject': M_SUBJ, 'TextPart': body}]
+                                     'Subject': 'Billing Report', 'TextPart': body}]
                     })
-                    return f"<h1>Sent {valid_count} summaries.</h1>"
+                    return f"<h1>Success! Sent {valid_count} summaries.</h1>"
                 return "<h1>No data found.</h1>"
 
             except Exception as e:
